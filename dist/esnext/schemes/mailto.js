@@ -54,56 +54,36 @@ function decodeUnreserved(str) {
 const handler = {
     scheme: "mailto",
     parse: function (components, options) {
-        const mailtoComponents = components;
-        const to = mailtoComponents.to = (mailtoComponents.path ? mailtoComponents.path.split(",") : []);
-        mailtoComponents.path = undefined;
-        if (mailtoComponents.query) {
-            let unknownHeaders = false;
-            const headers = {};
-            const hfields = mailtoComponents.query.split("&");
-            for (let x = 0, xl = hfields.length; x < xl; ++x) {
-                const hfield = hfields[x].split("=");
-                switch (hfield[0]) {
-                    case "to":
-                        const toAddrs = hfield[1].split(",");
-                        for (let x = 0, xl = toAddrs.length; x < xl; ++x) {
-                            to.push(toAddrs[x]);
-                        }
-                        break;
-                    case "subject":
-                        mailtoComponents.subject = unescapeComponent(hfield[1], options);
-                        break;
-                    case "body":
-                        mailtoComponents.body = unescapeComponent(hfield[1], options);
-                        break;
-                    default:
-                        unknownHeaders = true;
-                        headers[unescapeComponent(hfield[0], options)] = unescapeComponent(hfield[1], options);
-                        break;
-                }
-            }
-            if (unknownHeaders)
-                mailtoComponents.headers = headers;
-        }
-        mailtoComponents.query = undefined;
-        for (let x = 0, xl = to.length; x < xl; ++x) {
-            const addr = to[x].split("@");
-            addr[0] = unescapeComponent(addr[0]);
-            if (!options.unicodeSupport) {
-                //convert Unicode IDN -> ASCII IDN
+        const unEscapeComponent = (str, tryPuny = false) => {
+            const result = unescapeComponent(str, options);
+            if (tryPuny && options.unicodeSupport) {
                 try {
-                    addr[1] = punycode.toASCII(unescapeComponent(addr[1], options).toLowerCase());
+                    return punycode.toASCII(result);
                 }
                 catch (e) {
                     mailtoComponents.error = mailtoComponents.error || "Email address's domain name can not be converted to ASCII via punycode: " + e;
+                    return result;
                 }
             }
-            else {
-                addr[1] = unescapeComponent(addr[1], options).toLowerCase();
-            }
-            to[x] = addr.join("@");
+            return result;
+        };
+        const { path, query } = components;
+        let mailtoComponents = {
+            to: [],
+        };
+        if (path) {
+            mailtoComponents = insertInto(mailtoComponents, ['to', path], unEscapeComponent);
+            mailtoComponents.path = undefined;
         }
-        return mailtoComponents;
+        if (query) {
+            mailtoComponents.query = undefined;
+            const hFields = query.split("&");
+            mailtoComponents = hFields.reduce((acc, hField) => {
+                const fragments = hField.split('=');
+                return insertInto(mailtoComponents, fragments, unEscapeComponent);
+            }, mailtoComponents);
+        }
+        return Object.assign(components, mailtoComponents);
     },
     serialize: function (mailtoComponents, options) {
         const components = mailtoComponents;
@@ -145,4 +125,23 @@ const handler = {
     }
 };
 export default handler;
+function insertInto(components, fragment, unEscapeComponent) {
+    const [prop, value] = fragment;
+    if (['subject', 'body'].includes(prop)) {
+        return Object.assign(components, { [prop]: unEscapeComponent(value) });
+    }
+    if (prop === 'to') {
+        const addresses = value
+            .split(',')
+            .map((address) => {
+            const [local, domain] = address.split('@');
+            const unescapedLocal = unEscapeComponent(local);
+            const unescapedDomain = unEscapeComponent(domain, true);
+            return `${unescapedLocal}@${unescapedDomain.toLowerCase()}`;
+        });
+        return Object.assign(components, { to: components.to.concat(addresses) });
+    }
+    const headers = Object.assign({}, components.headers, { [unEscapeComponent(prop)]: unEscapeComponent(value) });
+    return Object.assign(components, { headers });
+}
 //# sourceMappingURL=mailto.js.map

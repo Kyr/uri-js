@@ -149,6 +149,41 @@ var URI_PROTOCOL = buildExps(false);
 
 var IRI_PROTOCOL = buildExps(true);
 
+var defineProperty = function (obj, key, value) {
+  if (key in obj) {
+    Object.defineProperty(obj, key, {
+      value: value,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    });
+  } else {
+    obj[key] = value;
+  }
+
+  return obj;
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 var slicedToArray = function () {
   function sliceIterator(arr, i) {
     var _arr = [];
@@ -1221,53 +1256,39 @@ function decodeUnreserved(str) {
 var handler$2 = {
     scheme: "mailto",
     parse: function parse$$1(components, options) {
-        var mailtoComponents = components;
-        var to = mailtoComponents.to = mailtoComponents.path ? mailtoComponents.path.split(",") : [];
-        mailtoComponents.path = undefined;
-        if (mailtoComponents.query) {
-            var unknownHeaders = false;
-            var headers = {};
-            var hfields = mailtoComponents.query.split("&");
-            for (var x = 0, xl = hfields.length; x < xl; ++x) {
-                var hfield = hfields[x].split("=");
-                switch (hfield[0]) {
-                    case "to":
-                        var toAddrs = hfield[1].split(",");
-                        for (var _x = 0, _xl = toAddrs.length; _x < _xl; ++_x) {
-                            to.push(toAddrs[_x]);
-                        }
-                        break;
-                    case "subject":
-                        mailtoComponents.subject = unescapeComponent(hfield[1], options);
-                        break;
-                    case "body":
-                        mailtoComponents.body = unescapeComponent(hfield[1], options);
-                        break;
-                    default:
-                        unknownHeaders = true;
-                        headers[unescapeComponent(hfield[0], options)] = unescapeComponent(hfield[1], options);
-                        break;
-                }
-            }
-            if (unknownHeaders) mailtoComponents.headers = headers;
-        }
-        mailtoComponents.query = undefined;
-        for (var _x2 = 0, _xl2 = to.length; _x2 < _xl2; ++_x2) {
-            var addr = to[_x2].split("@");
-            addr[0] = unescapeComponent(addr[0]);
-            if (!options.unicodeSupport) {
-                //convert Unicode IDN -> ASCII IDN
+        var unEscapeComponent = function unEscapeComponent(str) {
+            var tryPuny = arguments.length > 1 && arguments[1] !== undefined ? arguments[1] : false;
+
+            var result = unescapeComponent(str, options);
+            if (tryPuny && options.unicodeSupport) {
                 try {
-                    addr[1] = punycode.toASCII(unescapeComponent(addr[1], options).toLowerCase());
+                    return punycode.toASCII(result);
                 } catch (e) {
                     mailtoComponents.error = mailtoComponents.error || "Email address's domain name can not be converted to ASCII via punycode: " + e;
+                    return result;
                 }
-            } else {
-                addr[1] = unescapeComponent(addr[1], options).toLowerCase();
             }
-            to[_x2] = addr.join("@");
+            return result;
+        };
+        var path = components.path,
+            query = components.query;
+
+        var mailtoComponents = {
+            to: []
+        };
+        if (path) {
+            mailtoComponents = insertInto(mailtoComponents, ['to', path], unEscapeComponent);
+            mailtoComponents.path = undefined;
         }
-        return mailtoComponents;
+        if (query) {
+            mailtoComponents.query = undefined;
+            var hFields = query.split("&");
+            mailtoComponents = hFields.reduce(function (acc, hField) {
+                var fragments = hField.split('=');
+                return insertInto(mailtoComponents, fragments, unEscapeComponent);
+            }, mailtoComponents);
+        }
+        return Object.assign(components, mailtoComponents);
     },
     serialize: function serialize$$1(mailtoComponents, options) {
         var components = mailtoComponents;
@@ -1303,6 +1324,30 @@ var handler$2 = {
         return components;
     }
 };
+function insertInto(components, fragment, unEscapeComponent) {
+    var _fragment = slicedToArray(fragment, 2),
+        prop = _fragment[0],
+        value = _fragment[1];
+
+    if (['subject', 'body'].includes(prop)) {
+        return Object.assign(components, defineProperty({}, prop, unEscapeComponent(value)));
+    }
+    if (prop === 'to') {
+        var addresses = value.split(',').map(function (address) {
+            var _address$split = address.split('@'),
+                _address$split2 = slicedToArray(_address$split, 2),
+                local = _address$split2[0],
+                domain = _address$split2[1];
+
+            var unescapedLocal = unEscapeComponent(local);
+            var unescapedDomain = unEscapeComponent(domain, true);
+            return unescapedLocal + "@" + unescapedDomain.toLowerCase();
+        });
+        return Object.assign(components, { to: components.to.concat(addresses) });
+    }
+    var headers = Object.assign({}, components.headers, defineProperty({}, unEscapeComponent(prop), unEscapeComponent(value)));
+    return Object.assign(components, { headers: headers });
+}
 
 var URN_PARSE = /^([^\:]+)\:(.*)/;
 //RFC 2141

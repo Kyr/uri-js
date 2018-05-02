@@ -73,110 +73,116 @@ function decodeUnreserved(str:string):string {
 const handler:URISchemeHandler<MailtoComponents> =  {
 	scheme : "mailto",
 
-	parse : function (components:URIComponents, options:URIOptions):MailtoComponents {
-		const mailtoComponents = components as MailtoComponents;
-		const to = mailtoComponents.to = (mailtoComponents.path ? mailtoComponents.path.split(",") : []);
-		mailtoComponents.path = undefined;
+    parse : function (components:URIComponents, options:URIOptions):MailtoComponents {
+        const unEscapeComponent = (str: string, tryPuny: boolean = false) => {
+            const result = unescapeComponent(str, options);
+            if (tryPuny && options.unicodeSupport) {
+                try {
+                    return punycode.toASCII(result);
+                } catch (e) {
+                    mailtoComponents.error = mailtoComponents.error || "Email address's domain name can not be converted to ASCII via punycode: " + e;
+                    return result;
+                }
+            }
+            return result;
+        };
+        const {
+            path,
+            query
+        } = components;
+        let mailtoComponents:MailtoComponents = {
+            to: [],
+        };
 
-		if (mailtoComponents.query) {
-			let unknownHeaders = false
-			const headers:MailtoHeaders = {};
-			const hfields = mailtoComponents.query.split("&");
+        if (path) {
+            mailtoComponents = insertInto(mailtoComponents, ['to', path], unEscapeComponent);
+            mailtoComponents.path = undefined;
+        }
 
-			for (let x = 0, xl = hfields.length; x < xl; ++x) {
-				const hfield = hfields[x].split("=");
+        if (query) {
+            mailtoComponents.query = undefined;
+            const hFields = query.split("&");
 
-				switch (hfield[0]) {
-					case "to":
-						const toAddrs = hfield[1].split(",");
-						for (let x = 0, xl = toAddrs.length; x < xl; ++x) {
-							to.push(toAddrs[x]);
-						}
-						break;
-					case "subject":
-						mailtoComponents.subject = unescapeComponent(hfield[1], options);
-						break;
-					case "body":
-						mailtoComponents.body = unescapeComponent(hfield[1], options);
-						break;
-					default:
-						unknownHeaders = true;
-						headers[unescapeComponent(hfield[0], options)] = unescapeComponent(hfield[1], options);
-						break;
-				}
-			}
+            mailtoComponents = hFields.reduce((acc: MailtoComponents, hField: string): MailtoComponents => {
+                const fragments: string[] = hField.split('=');
+                return insertInto(mailtoComponents, fragments, unEscapeComponent);
+            }, mailtoComponents);
 
-			if (unknownHeaders) mailtoComponents.headers = headers;
-		}
+        }
 
-		mailtoComponents.query = undefined;
+        return Object.assign(components, mailtoComponents);
+    },
 
-		for (let x = 0, xl = to.length; x < xl; ++x) {
-			const addr = to[x].split("@");
+    serialize: function (mailtoComponents: MailtoComponents, options: URIOptions): URIComponents {
+        const components = mailtoComponents as URIComponents;
+        const to = toArray(mailtoComponents.to);
+        if (to) {
+            for (let x = 0, xl = to.length; x < xl; ++x) {
+                const toAddr = String(to[x]);
+                const atIdx = toAddr.lastIndexOf("@");
+                const localPart = (toAddr.slice(0, atIdx)).replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_LOCAL_PART, pctEncChar);
+                let domain = toAddr.slice(atIdx + 1);
 
-			addr[0] = unescapeComponent(addr[0]);
+                //convert IDN via punycode
+                try {
+                    domain = (!options.iri ? punycode.toASCII(unescapeComponent(domain, options).toLowerCase()) : punycode.toUnicode(domain));
+                } catch (e) {
+                    components.error = components.error || "Email address's domain name can not be converted to " + (!options.iri ? "ASCII" : "Unicode") + " via punycode: " + e;
+                }
 
-			if (!options.unicodeSupport) {
-				//convert Unicode IDN -> ASCII IDN
-				try {
-					addr[1] = punycode.toASCII(unescapeComponent(addr[1], options).toLowerCase());
-				} catch (e) {
-					mailtoComponents.error = mailtoComponents.error || "Email address's domain name can not be converted to ASCII via punycode: " + e;
-				}
-			} else {
-				addr[1] = unescapeComponent(addr[1], options).toLowerCase();
-			}
+                to[x] = localPart + "@" + domain;
+            }
 
-			to[x] = addr.join("@");
-		}
+            components.path = to.join(",");
+        }
 
-		return mailtoComponents;
-	},
+        const headers = mailtoComponents.headers = mailtoComponents.headers || {};
 
-	serialize : function (mailtoComponents:MailtoComponents, options:URIOptions):URIComponents {
-		const components = mailtoComponents as URIComponents;
-		const to = toArray(mailtoComponents.to);
-		if (to) {
-			for (let x = 0, xl = to.length; x < xl; ++x) {
-				const toAddr = String(to[x]);
-				const atIdx = toAddr.lastIndexOf("@");
-				const localPart = (toAddr.slice(0, atIdx)).replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_LOCAL_PART, pctEncChar);
-				let domain = toAddr.slice(atIdx + 1);
+        if (mailtoComponents.subject) headers["subject"] = mailtoComponents.subject;
+        if (mailtoComponents.body) headers["body"] = mailtoComponents.body;
 
-				//convert IDN via punycode
-				try {
-					domain = (!options.iri ? punycode.toASCII(unescapeComponent(domain, options).toLowerCase()) : punycode.toUnicode(domain));
-				} catch (e) {
-					components.error = components.error || "Email address's domain name can not be converted to " + (!options.iri ? "ASCII" : "Unicode") + " via punycode: " + e;
-				}
+        const fields = [];
+        for (const name in headers) {
+            if (headers[name] !== O[name]) {
+                fields.push(
+                    name.replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_HFNAME, pctEncChar) +
+                    "=" +
+                    headers[name].replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_HFVALUE, pctEncChar)
+                );
+            }
+        }
+        if (fields.length) {
+            components.query = fields.join("&");
+        }
 
-				to[x] = localPart + "@" + domain;
-			}
-
-			components.path = to.join(",");
-		}
-
-		const headers = mailtoComponents.headers = mailtoComponents.headers || {};
-
-		if (mailtoComponents.subject) headers["subject"] = mailtoComponents.subject;
-		if (mailtoComponents.body) headers["body"] = mailtoComponents.body;
-
-		const fields = [];
-		for (const name in headers) {
-			if (headers[name] !== O[name]) {
-				fields.push(
-					name.replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_HFNAME, pctEncChar) +
-					"=" +
-					headers[name].replace(PCT_ENCODED, decodeUnreserved).replace(PCT_ENCODED, toUpperCase).replace(NOT_HFVALUE, pctEncChar)
-				);
-			}
-		}
-		if (fields.length) {
-			components.query = fields.join("&");
-		}
-
-		return components;
-	}
+        return components;
+    }
 }
 
 export default handler;
+
+function insertInto(components: MailtoComponents, fragment: string[], unEscapeComponent: any): MailtoComponents {
+    const [prop, value] = fragment;
+
+    if (['subject', 'body'].includes(prop)) {
+        return Object.assign(components, {[prop]: unEscapeComponent(value)})
+    }
+
+    if (prop === 'to') {
+        const addresses = value
+            .split(',')
+            .map((address: string): string => {
+                const [local, domain] = address.split('@');
+                const unescapedLocal = unEscapeComponent(local);
+                const unescapedDomain = unEscapeComponent(domain, true);
+
+                return `${unescapedLocal}@${unescapedDomain.toLowerCase()}`;
+            });
+
+        return Object.assign(components, {to: components.to.concat(addresses)});
+    }
+
+    const headers = Object.assign({}, components.headers, {[unEscapeComponent(prop)]: unEscapeComponent(value)});
+
+    return Object.assign(components, {headers});
+}
